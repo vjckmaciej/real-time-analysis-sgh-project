@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - kafka
+    entrypoint: [ "/bin/bash", "-c" ]
+    command: |
+      echo "⏳ Waiting for Kafka..." && \
+      sleep 10 && \
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic weather --partitions 1 --replication-factor 1 && \
+      echo "✅ Kafka topic created"
+
+  producer:
+    build: ./producer
+    depends_on:
+      - kafka-init
+    restart: on-failure
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=weather
+    volumes:
+      - ./producer:/app
+    working_dir: /app
+    command: sh -c "sleep 10 && python main.py"
+
+  spark_app:
+    build: ./spark_app
+    depends_on:
+      - kafka
+    environment:
+      - JAVA_TOOL_OPTIONS=-Dhttp.proxyHost= -Dhttp.proxyPort= -Dhttps.proxyHost= -Dhttps.proxyPort=
+    volumes:
+      - ./data:/app/data
+    working_dir: /app
+    command: /opt/bitnami/spark/bin/spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1 --master local[*] /app/main.py
+
+
+  streamlit_app:
+    build: ./streamlit_app
+    depends_on:
+      - spark_app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./streamlit_app:/app
+      - ./data:/app/data
+    working_dir: /app
+    command: streamlit run main.py
